@@ -1,0 +1,5 @@
+diamonds.csv
+__pycache__/
+.env
+authkey
+authkey.pub
