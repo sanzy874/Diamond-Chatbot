@@ -3,3 +3,5 @@ __pycache__/
 .env
 authkey
 authkey.pub
+.~lock.diamonds_modified.csv#
+.gitattributes
