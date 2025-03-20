@@ -8,19 +8,19 @@ from groq import Groq
 
 # Load environment variables
 load_dotenv()
-groq_api_keys_str = os.getenv("GROQ_API_KEYS")
-if groq_api_keys_str:
-    groq_api_keys = [key.strip() for key in groq_api_keys_str.split(",")]
-    GROQ_API_KEY = random.choice(groq_api_keys)
-else:
-    GROQ_API_KEY = None
-    print("No API key found")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# if groq_api_keys_str:
+#     groq_api_keys = [key.strip() for key in groq_api_keys_str.split(",")]
+#     GROQ_API_KEY = random.choice(groq_api_keys)
+# else:
+#     GROQ_API_KEY = None
+#     print("No API key found")
 
 SOLR_URL = os.getenv("SOLR_URL")
 SOLR_COLLECTION_NAME = os.getenv("SOLR_COLLECTION_NAME")
 
 # ------------------- Solr Client Initialization -------------------    
-def create_solr_client():
+def create_solr_client():                               
     return pysolr.Solr(f'{SOLR_URL}{SOLR_COLLECTION_NAME}', always_commit=False, timeout=10)
 
 solr_client = create_solr_client()
@@ -204,9 +204,12 @@ def extract_constraints_from_query(user_query):
             found_color = True
             break
     if not found_color:
-        simple_color_match = re.search(r'\b([defghijklmn])(?:\s*grade|\s*color|\s*gia)?\b', user_query, re.IGNORECASE)
+        simple_color_match = re.search(r'\b([defghijklmn])\s*(?:color|grade|gia)\b', user_query, re.IGNORECASE)
+        if not simple_color_match:
+            simple_color_match = re.search(r'\b(?:color|grade|gia)\s*([defghijklmn])\b', user_query, re.IGNORECASE)
         if simple_color_match:
             constraints["Color"] = simple_color_match.group(1).lower()
+
     
     # ----- Color Range -----
     color_range_match = re.search(r'\bcolors?\s+(?:between|from|range)?\s+([defghijklmn])\s+(?:to|and|through|[-])\s+([defghijklmn])', query_lower)
@@ -618,6 +621,10 @@ def diamond_chatbot(user_query, solr_client, client):
         return "Hey there! I'm your diamond guru. Ready to help you find that perfect sparkle? Tell me what you're looking for!"
 
     constraints = extract_constraints_from_query(user_query)
+    
+    # -------------------- Debugging --------------------
+    # print("Extracted Constraints:", constraints)
+    # ---------------------------------------------------
     if not constraints and not any(keyword in user_query.lower() for keyword in ["maximum", "minimum", "lowest", "highest", "largest", "smallest"]):
         return "Hello! I'm your diamond assistant. Please let me know your preferred carat, clarity, color, cut, or budget so I can help you find the perfect diamond."
 
@@ -653,6 +660,7 @@ def diamond_chatbot(user_query, solr_client, client):
         relevant_data_list.append(diamond_info)
     relevant_data_json = json.dumps(relevant_data_list, indent=2)
 
+    # Groq response comment out while debug to prevent api calls!
     groq_response = generate_groq_response(user_query, relevant_data_json, client)
     return groq_response
 
