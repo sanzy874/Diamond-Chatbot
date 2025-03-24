@@ -121,6 +121,30 @@ def extract_constraints_from_query(user_query):
         constraints["Style"] = "lab" if "lab" in style else "natural"
 
     # ----- Carat -----
+    carat_value_match = None
+
+    # Check for "less than" related carat constraints
+    less_than_carat_patterns = [
+        r'\b(?:under|below|less than|max|max price|at most|upto|up to|no more than|within|maximum|not exceeding)\s+(\d+(?:\.\d+)?)(?:\s*)?(?:carat[s]?|ct[s]?|crt|carrat)\b',
+    ]
+    for pattern in less_than_carat_patterns:
+        match = re.search(pattern, query_lower, re.IGNORECASE)
+        if match:
+            constraints["CaratHigh"] = float(match.group(1))
+            carat_value_match = match
+            break
+
+    # Check for "more than" related carat constraints
+    more_than_carat_patterns = [
+        r'\b(?:more than|above|over|at least|min(?:imum)?|starting at|from)\s+(\d+(?:\.\d+)?)(?:\s*)?(?:carat[s]?|ct[s]?|crt|carrat)\b',
+    ]
+    for pattern in more_than_carat_patterns:
+        match = re.search(pattern, query_lower, re.IGNORECASE)
+        if match:
+            constraints["CaratLow"] = float(match.group(1))
+            carat_value_match = match
+            break
+
     carat_patterns = [
         # Range pattern: matches "2 ct and 4 ct", "2ct to 4ct", or "2ct-4ct"
         r'(\d+(?:\.\d+)?)(?:\s*)?(?:to|-|and)(?:\s*)?(\d+(?:\.\d+)?)(?:\s*)?(?:carat[s]?|ct[s]?|crt|carrat)\b',
@@ -128,23 +152,27 @@ def extract_constraints_from_query(user_query):
         r'(\d+(?:\.\d+)?)(?:\s*)?(?:carat[s]?|ct[s]?|crt|carrat)\b'
     ]
 
-
-    for pattern in carat_patterns:
-        match = re.search(pattern, query_lower, re.IGNORECASE)
-        if match:
-            if match.lastindex >= 2 and re.fullmatch(r'\d+(?:\.\d+)?', match.group(2).strip()):
-                constraints["CaratLow"] = float(match.group(1))
-                constraints["CaratHigh"] = float(match.group(2))
-            else:
-                constraints["Carat"] = float(match.group(1))
-            break
+    if carat_value_match is None:
+        for pattern in carat_patterns:
+            match = re.search(pattern, query_lower, re.IGNORECASE)
+            if match:
+                carat_value_match = match
+                if match.lastindex >= 2 and re.fullmatch(r'\d+(?:\.\d+)?', match.group(2).strip()):
+                    constraints["CaratLow"] = float(match.group(1))
+                    constraints["CaratHigh"] = float(match.group(2))
+                else:
+                    constraints["Carat"] = float(match.group(1))
+                break
 
     # Additional special phrase checks for common carat values
-    if "one carat" in query_lower or "1 carat" in query_lower:
-        constraints["Carat"] = 1.0
-    elif "half carat" in query_lower or "0.5 carat" in query_lower or "0.5 ct" in query_lower:
-        constraints["Carat"] = 0.5
- 
+    if carat_value_match is None:
+        if "one carat" in query_lower or "1 carat" in query_lower:
+            constraints["Carat"] = 1.0
+            carat_value_match = re.search(r'\b(?:one|1)\s+carat\b', query_lower, re.IGNORECASE)
+        elif "half carat" in query_lower or "0.5 carat" in query_lower or "0.5 ct" in query_lower:
+            constraints["Carat"] = 0.5
+            carat_value_match = re.search(r'\b(?:half|0\.5)\s+carat(?:s)?|0\.5\s+ct\b', query_lower, re.IGNORECASE)
+
     # ----- Budget / Price Extraction -----
     price_patterns = [
         (r'\bprice\s+(?:range|btw)(?:\s*between)?\s*(?:\$)?(\d+(?:,\d+)?(?:\.\d+)?(?:[kK])?)(?:\$)?\s*(?:to|and|-)\s*(?:\$)?(\d+(?:,\d+)?(?:\.\d+)?(?:[kK])?)(?:\$)?',
@@ -162,8 +190,8 @@ def extract_constraints_from_query(user_query):
         (r'\b(?:more than|above|over|at least|min(?:imum)?|starting at|from)\s*\$?(\d+(?:,\d+)?[kK]?)',
         lambda m: {"BudgetMin": convert_price_str(m.group(1))}),
         # Under price: e.g. "under $1000", "below $900", "not exceeding $800"
-        (r'\b(?:under|below|less than|max|max price|at most|upto|up to|no more than|within|maximum|not exceeding)\s*\$?(\d+(?:,\d+)?[kK]?)',
-        lambda m: {"Budget": convert_price_str(m.group(1)), "BudgetStrict": True}),
+        (r'\b(?:under|below|less than|max|max price|at most|upto|up to|no more than|within|maximum|not exceeding)\s*\$?(?P<price>\d+(?:,\d+)?[kK]?)(?!\s*(?:carat|ct|crt|carrat))\b',
+        lambda m: {"Budget": convert_price_str(m.group("price")), "BudgetStrict": True}),
         # Fallback: capture any "$" value (used only if nothing else matched)
         (r'\$\s*(\d+(?:,\d+)?[kK]?)',
         lambda m: {"BudgetMax": convert_price_str(m.group(1))})
@@ -172,15 +200,17 @@ def extract_constraints_from_query(user_query):
     # Process the patterns in order and update constraints with the first successful match.
     for pattern, action in price_patterns:
         price_match = re.search(pattern, query_lower, re.IGNORECASE)
-        if price_match:
+        # Check if this match overlaps with the already found carat value
+        if price_match and (carat_value_match is None or (price_match.start() >= carat_value_match.end() or price_match.end() <= carat_value_match.start())):
             constraints.update(action(price_match))
             break
 
     # Additional fallback: if no pattern matched and we haven't set any budget keys, try again with the raw query.
     if not any(key in constraints for key in ["BudgetLow", "BudgetHigh", "BudgetTarget", "BudgetMax", "BudgetMin", "Budget"]):
         budget_standalone_match = re.search(r'\$\s*(\d+(?:,\d+)?[kK]?)', user_query, re.IGNORECASE)
-        if budget_standalone_match:
+        if budget_standalone_match and (carat_value_match is None or (budget_standalone_match.start() >= carat_value_match.end() or budget_standalone_match.end() <= carat_value_match.start())):
             constraints["BudgetMax"] = convert_price_str(budget_standalone_match.group(1))
+
 
     # ----- Color -----
     color_mapping = {
@@ -575,32 +605,8 @@ def generate_groq_response(user_query, relevant_data, client):
 You are a friendly, expert diamond consultant with years of experience helping customers find the perfect diamond.
 User Query: "{user_query}"
 Your response should be personal, warm, and engaging. Provide an expert recommendation based on the customer's query.
-Please analyze the following diamond details and produce a JSON response that includes the top matching diamonds.
-Your response should include:
-1. A brief introductory paragraph (one or two sentences) in a conversational tone explaining what you found and why the top pick stands out.
-2. A comparison of the user query with the recommended diamonds. If the recommendations do not exactly match the query (for example, in carat, fluorescence, or price), include a note explaining that exact matches were not available and describe why one of the alternatives might be better.
-3. Immediately following your explanation, include a special marker <diamond-data> and then a valid JSON array of diamond objects.
-4. Close with </diamond-data>.
-
-Each diamond object must include the following attributes:
-- Carat
-- Clarity
-- Color
-- Cut
-- Shape
-- Price
-- Style
-- Polish
-- Symmetry
-- Lab
-- Flo
-- Length
-- Height
-- Width
-- Depth
-- pdf
-- image
-- video
+Please analyze the following diamond details and give a very concise response. NOT LONGER THAN 3 SENTENCES.
+Your response should include: A brief introductory paragraph (one or two sentences) in a conversational tone explaining what you found and why the top pick stands out while comparing the user query with the recommended diamonds. If the recommendations do not exactly match the query (for example, in carat, fluorescence, or price), include a note explaining that exact matches were not available and describe why one of the alternatives might be better.
 
 Below are some diamond details:
 {relevant_data}
@@ -660,9 +666,11 @@ def diamond_chatbot(user_query, solr_client, client):
         relevant_data_list.append(diamond_info)
     relevant_data_json = json.dumps(relevant_data_list, indent=2)
 
-    # Groq response comment out while debug to prevent api calls!
+    # Groq response, comment out while debug to prevent api calls!
     groq_response = generate_groq_response(user_query, relevant_data_json, client)
-    return groq_response
+    diamond_data_response = f"<diamond-data>\n{relevant_data_json}\n</diamond-data>"
+    final_response = f"{groq_response}\n{diamond_data_response}"
+    return final_response
 
 def main(): 
     client = Groq(api_key=GROQ_API_KEY)
